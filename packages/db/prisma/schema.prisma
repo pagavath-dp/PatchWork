@@ -42,6 +42,8 @@ model User {
   memberships     WorkspaceMember[]
   createdTasks    Task[]            @relation("TaskCreator")
   assignedTasks   Task[]            @relation("TaskAssignee")
+  githubConnections GitHubConnection[] @relation("GitHubConnector")
+  linkedGitHubItems TaskGitHubLink[] @relation("GitHubLinkCreator")
 }
 
 model Session {
@@ -67,6 +69,73 @@ model Workspace {
   updatedAt DateTime          @updatedAt
   members   WorkspaceMember[]
   tasks     Task[]
+  githubConnection GitHubConnection?
+}
+
+model GitHubConnection {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @unique @db.Uuid
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installationId String   @db.VarChar(30)
+  repositoryId   String   @db.VarChar(30)
+  owner          String   @db.VarChar(100)
+  name           String   @db.VarChar(100)
+  fullName       String   @db.VarChar(201)
+  description    String?
+  htmlUrl        String
+  defaultBranch  String   @db.VarChar(255)
+  isPrivate      Boolean
+  connectedById  String   @db.Uuid
+  connectedBy    User     @relation("GitHubConnector", fields: [connectedById], references: [id])
+  connectedAt    DateTime @default(now())
+  disconnectedAt DateTime?
+  syncGeneration Int      @default(0)
+  lastSyncedAt   DateTime?
+  lastSyncError  String?  @db.VarChar(300)
+  items          GitHubItem[]
+  activities     GitHubActivity[]
+}
+
+model GitHubItem {
+  id           String @id @default(uuid()) @db.Uuid
+  connectionId String @db.Uuid
+  connection   GitHubConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  githubId     String @db.VarChar(30)
+  syncGeneration Int @default(0)
+  number       Int
+  kind         GitHubItemKind
+  title        String
+  state        String @db.VarChar(30)
+  htmlUrl      String
+  authorLogin  String? @db.VarChar(100)
+  createdAt    DateTime
+  updatedAt    DateTime
+  taskLinks    TaskGitHubLink[]
+
+  @@unique([connectionId, githubId])
+  @@index([connectionId, kind, updatedAt])
+}
+
+enum GitHubItemKind {
+  ISSUE
+  PULL_REQUEST
+}
+
+model GitHubActivity {
+  id           String @id @default(uuid()) @db.Uuid
+  connectionId String @db.Uuid
+  connection   GitHubConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  githubId     String @db.VarChar(30)
+  syncGeneration Int @default(0)
+  event        String @db.VarChar(80)
+  itemNumber   Int
+  itemTitle    String
+  itemUrl      String
+  actorLogin   String? @db.VarChar(100)
+  occurredAt   DateTime
+
+  @@unique([connectionId, githubId])
+  @@index([connectionId, occurredAt])
 }
 
 model WorkspaceMember {
@@ -96,8 +165,25 @@ model Task {
   createdBy   User         @relation("TaskCreator", fields: [createdById], references: [id])
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+  githubLinks TaskGitHubLink[]
 
   @@index([workspaceId, status])
   @@index([workspaceId, dueDate])
   @@index([workspaceId, createdAt])
+}
+
+model TaskGitHubLink {
+  id         String      @id @default(uuid()) @db.Uuid
+  workspaceId String     @db.Uuid
+  taskId     String      @db.Uuid
+  task       Task        @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  itemId     String      @db.Uuid
+  item       GitHubItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  linkedById String      @db.Uuid
+  linkedBy   User        @relation("GitHubLinkCreator", fields: [linkedById], references: [id])
+  linkedAt   DateTime    @default(now())
+  unlinkedAt DateTime?
+
+  @@unique([taskId, itemId])
+  @@index([workspaceId, unlinkedAt])
 }

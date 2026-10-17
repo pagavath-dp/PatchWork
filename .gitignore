@@ -11,6 +11,9 @@ coverage/
 
 .DS_Store
 *.log
+*.pem
+*.key
+*.p8
 
 # Prisma client output is generated from the committed schema.
 packages/db/src/generated/
