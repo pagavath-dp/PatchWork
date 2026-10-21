@@ -14,6 +14,13 @@ enum WorkspaceRole {
   VIEWER
 }
 
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  REVOKED
+}
+
 enum TaskStatus {
   TODO
   IN_PROGRESS
@@ -44,6 +51,9 @@ model User {
   assignedTasks   Task[]            @relation("TaskAssignee")
   githubConnections GitHubConnection[] @relation("GitHubConnector")
   linkedGitHubItems TaskGitHubLink[] @relation("GitHubLinkCreator")
+  sentInvitations WorkspaceInvitation[] @relation("InvitationInviter")
+  acceptedInvitations WorkspaceInvitation[] @relation("InvitationAcceptor")
+  taskActivities TaskActivity[] @relation("TaskActivityActor")
 }
 
 model Session {
@@ -70,6 +80,29 @@ model Workspace {
   members   WorkspaceMember[]
   tasks     Task[]
   githubConnection GitHubConnection?
+  invitations WorkspaceInvitation[]
+  taskActivities TaskActivity[]
+}
+
+model WorkspaceInvitation {
+  id                String           @id @default(uuid()) @db.Uuid
+  workspaceId       String           @db.Uuid
+  workspace         Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  inviterId         String           @db.Uuid
+  inviter           User             @relation("InvitationInviter", fields: [inviterId], references: [id])
+  recipientGithubId String           @db.VarChar(30)
+  recipientLogin    String           @db.VarChar(100)
+  role              WorkspaceRole
+  tokenHash         String           @unique @db.VarChar(64)
+  status            InvitationStatus @default(PENDING)
+  createdAt         DateTime         @default(now())
+  expiresAt         DateTime
+  respondedAt       DateTime?
+  acceptedById      String?          @db.Uuid
+  acceptedBy        User?            @relation("InvitationAcceptor", fields: [acceptedById], references: [id])
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, recipientGithubId, status])
 }
 
 model GitHubConnection {
@@ -166,10 +199,36 @@ model Task {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   githubLinks TaskGitHubLink[]
+  activities TaskActivity[]
 
   @@index([workspaceId, status])
   @@index([workspaceId, dueDate])
   @@index([workspaceId, createdAt])
+}
+
+enum TaskActivityKind {
+  TASK_CREATED
+  TASK_UPDATED
+  GITHUB_ITEM_LINKED
+  GITHUB_ITEM_UNLINKED
+}
+
+model TaskActivity {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  taskId      String @db.Uuid
+  task        Task @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  actorId     String @db.Uuid
+  actor       User @relation("TaskActivityActor", fields: [actorId], references: [id], onDelete: Restrict)
+  actorLogin  String @db.VarChar(100)
+  taskTitle   String @db.VarChar(160)
+  kind        TaskActivityKind
+  details     Json
+  occurredAt  DateTime @default(now())
+
+  @@index([workspaceId, occurredAt, id])
+  @@index([taskId, occurredAt])
 }
 
 model TaskGitHubLink {
