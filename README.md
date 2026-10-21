@@ -48,3 +48,6 @@ See `docs/architecture.md` and `docs/api-contracts.md` for the current design an
 
 Do not commit `.env` or any real credential. `main` is the integration branch; use small feature branches and review changes before committing or merging.
 The web app uses Next.js's supported Webpack mode for local development and builds because Turbopack's CSS worker could not bind a local port in the current environment.
+
+<!-- Contribution by Pagavath D P -->
+<!-- Contribution by Man Mohit Kumar -->
