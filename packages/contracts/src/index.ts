@@ -13,6 +13,17 @@ export const createWorkspaceSchema = z.strictObject({
 });
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
 
+export const createInvitationSchema = z.strictObject({
+  githubLogin: z.string().trim().min(1).max(39).regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, "Enter a GitHub username"),
+  role: z.enum(["ADMIN", "MEMBER", "VIEWER"]),
+});
+export type CreateInvitationInput = z.infer<typeof createInvitationSchema>;
+
+export const updateMemberRoleSchema = z.strictObject({ role: workspaceRoleSchema });
+export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>;
+
+export const invitationTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/, "Invalid invitation token");
+
 export const createTaskSchema = z.strictObject({
   title: z.string().trim().min(1).max(160),
   description: z.string().trim().max(5000).optional(),
@@ -24,14 +35,47 @@ export const createTaskSchema = z.strictObject({
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 
 export const updateTaskSchema = z.strictObject({
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
   title: z.string().trim().min(1).max(160).optional(),
   description: z.string().trim().max(5000).optional(),
   status: taskStatusSchema.optional(),
   priority: taskPrioritySchema.optional(),
   dueDate: z.iso.date().nullable().optional(),
   assigneeId: z.uuid().nullable().optional(),
-}).refine((input) => Object.values(input).some((value) => value !== undefined), "At least one task field is required");
+}).refine((input) => [input.title, input.description, input.status, input.priority, input.dueDate, input.assigneeId]
+  .some((value) => value !== undefined), "At least one task field is required");
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
+
+export const activityCursorSchema = z.string().min(1).max(1024).regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+export type TaskActivityField = "title" | "description" | "status" | "priority" | "dueDate" | "assigneeId";
+export type TaskActivityChange = { field: TaskActivityField; before?: string | null; after?: string | null };
+export type WorkspaceActivityItem = {
+  id: string;
+  source: "TASK" | "GITHUB";
+  occurredAt: string;
+  actorLogin: string | null;
+} & ({
+  source: "TASK";
+  kind: "TASK_CREATED" | "TASK_UPDATED" | "GITHUB_ITEM_LINKED" | "GITHUB_ITEM_UNLINKED";
+  actorId: string;
+  taskId: string;
+  taskTitle: string;
+  details: { changes?: TaskActivityChange[]; item?: {
+    kind: "ISSUE" | "PULL_REQUEST"; number: number; title: string; url: string; repository: string;
+  } };
+} | {
+  source: "GITHUB";
+  event: string;
+  itemNumber: number;
+  itemTitle: string;
+  itemUrl: string;
+});
+export type WorkspaceActivityPage = {
+  items: WorkspaceActivityItem[];
+  nextCursor: string | null;
+  github: { snapshotStatus: "unavailable" | "fresh" | "stale"; lastSyncedAt: string | null;
+    refreshAvailable: boolean; reason: string | null };
+};
 
 export type ApiError = {
   error: {

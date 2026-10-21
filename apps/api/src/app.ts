@@ -2,22 +2,25 @@ import express, { type Express } from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import type { PrismaClient } from "@patchwork/db";
-import { connectRepositorySchema, createTaskGitHubLinkSchema, createTaskSchema, createWorkspaceSchema, startRepositoryConnectionSchema, updateTaskSchema } from "@patchwork/contracts";
+import { connectRepositorySchema, createInvitationSchema, createTaskGitHubLinkSchema, createTaskSchema, createWorkspaceSchema, invitationTokenSchema, startRepositoryConnectionSchema, updateMemberRoleSchema, updateTaskSchema } from "@patchwork/contracts";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError, requireSameOrigin, sendError } from "./http.js";
 import { codeChallenge, equalTokens, randomUrlToken, type OAuthGateway } from "./oauth.js";
 import { attachUser, createSession, SESSION_COOKIE } from "./session.js";
-import { createTask, createWorkspace, listTasks, listWorkspaceMembers, listWorkspaces, updateTask } from "./services.js";
+import { createTask, createWorkspace, listTasks, listWorkspaceMembers, listWorkspaces, taskRevision, updateTask } from "./services.js";
 import { createGitHubGateway, requireGitHubApp, type GitHubGateway } from "./github.js";
 import { canConnectRepository, connectRepository, disconnectRepository, linkTaskGitHubItem, listRepositoryActivity, listRepositoryItems, listTaskGitHubLinks, readRepository, refreshRepository, requireManager, unlinkTaskGitHubItem } from "./github-services.js";
 import { requireWorkspaceMember } from "./services.js";
 import { readWorkspaceHealth } from "./health-services.js";
+import { createInvitation, listInvitations, readInvitation, removeMember, resolveGitHubIdentity, respondToInvitation, revokeInvitation, updateMemberRole, type ResolveGitHubIdentity } from "./workspace-membership.js";
+import { readWorkspaceActivity } from "./activity-services.js";
 
 const TX_COOKIE_AGE_MS = 10 * 60 * 1000;
 const idSchema = z.uuid();
 
-export function createApp(db: PrismaClient, oauth: OAuthGateway, config: AppConfig, githubGateway?: GitHubGateway): Express {
+export function createApp(db: PrismaClient, oauth: OAuthGateway, config: AppConfig, githubGateway?: GitHubGateway,
+  resolveInvitationRecipient: ResolveGitHubIdentity = resolveGitHubIdentity): Express {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
@@ -148,11 +151,77 @@ export function createApp(db: PrismaClient, oauth: OAuthGateway, config: AppConf
     } catch (error) { next(error); }
   });
 
+  app.patch("/api/v1/workspaces/:workspaceId/members/:userId", sameOrigin, async (request, response, next) => {
+    try {
+      const actor = response.locals.user as { id: string };
+      const workspaceId = idSchema.parse(request.params.workspaceId);
+      const userId = idSchema.parse(request.params.userId);
+      response.json({ data: await updateMemberRole(db, workspaceId, userId, actor.id, updateMemberRoleSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+  app.delete("/api/v1/workspaces/:workspaceId/members/:userId", sameOrigin, async (request, response, next) => {
+    try {
+      const actor = response.locals.user as { id: string };
+      const workspaceId = idSchema.parse(request.params.workspaceId);
+      const userId = idSchema.parse(request.params.userId);
+      response.json({ data: await removeMember(db, workspaceId, userId, actor.id) });
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/workspaces/:workspaceId/invitations", async (request, response, next) => {
+    try {
+      const actor = response.locals.user as { id: string };
+      const workspaceId = idSchema.parse(request.params.workspaceId);
+      response.json({ data: await listInvitations(db, workspaceId, actor.id) });
+    } catch (error) { next(error); }
+  });
+  app.post("/api/v1/workspaces/:workspaceId/invitations", sameOrigin, async (request, response, next) => {
+    try {
+      const actor = response.locals.user as { id: string };
+      const workspaceId = idSchema.parse(request.params.workspaceId);
+      const invitation = await createInvitation(db, workspaceId, actor.id,
+        createInvitationSchema.parse(request.body), resolveInvitationRecipient);
+      response.status(201).json({ data: invitation });
+    } catch (error) { next(error); }
+  });
+  app.post("/api/v1/workspaces/:workspaceId/invitations/:invitationId/revoke", sameOrigin, async (request, response, next) => {
+    try {
+      const actor = response.locals.user as { id: string };
+      const workspaceId = idSchema.parse(request.params.workspaceId);
+      const invitationId = idSchema.parse(request.params.invitationId);
+      response.json({ data: await revokeInvitation(db, workspaceId, invitationId, actor.id) });
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/invitations/:token", async (request, response, next) => {
+    try {
+      const actor = response.locals.user as { githubId: string };
+      const token = invitationTokenSchema.parse(request.params.token);
+      response.json({ data: await readInvitation(db, token, actor.githubId) });
+    } catch (error) { next(error); }
+  });
+  for (const action of ["accept", "reject"] as const) {
+    app.post(`/api/v1/invitations/:token/${action}`, sameOrigin, async (request, response, next) => {
+      try {
+        const actor = response.locals.user as { id: string; githubId: string };
+        const token = invitationTokenSchema.parse(request.params.token);
+        response.json({ data: await respondToInvitation(db, token, actor, action === "accept" ? "ACCEPTED" : "REJECTED") });
+      } catch (error) { next(error); }
+    });
+  }
+
   app.get("/api/v1/workspaces/:workspaceId/health", async (request, response, next) => {
     try {
       const user = response.locals.user as { id: string };
       const workspaceId = idSchema.parse(request.params.workspaceId);
       response.json({ data: await readWorkspaceHealth(db, workspaceId, user.id, Boolean(config.githubApp)) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/workspaces/:workspaceId/activity", async (request, response, next) => {
+    try {
+      const user = response.locals.user as { id: string };
+      const workspaceId = idSchema.parse(request.params.workspaceId);
+      response.json({ data: await readWorkspaceActivity(db, workspaceId, user.id, Boolean(config.githubApp),
+        config.githubClientSecret, request.query.cursor) });
     } catch (error) { next(error); }
   });
 
@@ -170,7 +239,8 @@ export function createApp(db: PrismaClient, oauth: OAuthGateway, config: AppConf
       const workspaceId = idSchema.parse(request.params.workspaceId);
       const input = createTaskSchema.parse(request.body);
       const task = await createTask(db, workspaceId, user.id, input);
-      response.status(201).json({ data: { ...task, dueDate: task.dueDate?.toISOString().slice(0, 10) ?? null } });
+      response.status(201).json({ data: { ...task, dueDate: task.dueDate?.toISOString().slice(0, 10) ?? null,
+        revision: taskRevision(task) } });
     } catch (error) { next(error); }
   });
 
@@ -181,7 +251,8 @@ export function createApp(db: PrismaClient, oauth: OAuthGateway, config: AppConf
       const taskId = idSchema.parse(request.params.taskId);
       const input = updateTaskSchema.parse(request.body);
       const task = await updateTask(db, workspaceId, taskId, user.id, input);
-      response.json({ data: { ...task, dueDate: task.dueDate?.toISOString().slice(0, 10) ?? null } });
+      response.json({ data: { ...task, dueDate: task.dueDate?.toISOString().slice(0, 10) ?? null,
+        revision: taskRevision(task) } });
     } catch (error) { next(error); }
   });
 

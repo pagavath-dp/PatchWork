@@ -14,6 +14,15 @@ export type RepositoryItems = {
 
 type Request = typeof apiRequest;
 
+export function appendUniqueTasks(current: Task[], incoming: Task[]): Task[] {
+  const seen = new Set(current.map((task) => task.id));
+  return [...current, ...incoming.filter((task) => {
+    if (seen.has(task.id)) return false;
+    seen.add(task.id);
+    return true;
+  })];
+}
+
 export function loadWorkspaceSections(workspaceId: string, request: Request = apiRequest) {
   return {
     core: Promise.all([

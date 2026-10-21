@@ -1,4 +1,4 @@
-# Milestone 1 API contracts
+# Current API contracts
 
 The browser sends credentials to same-origin `/auth/*` and `/api/v1/*` paths. JSON successes use `{ "data": ... }`. JSON failures use `{ "error": { "code": "...", "message": "...", "details": ... } }`.
 
@@ -11,16 +11,29 @@ The browser sends credentials to same-origin `/auth/*` and `/api/v1/*` paths. JS
 | `GET /api/v1/workspaces` | None | Array of caller's workspaces with role | Signed in |
 | `POST /api/v1/workspaces` | `name`, `slug`, optional IANA `timeZone` | Workspace with owner role, HTTP 201 | Signed in, same origin |
 | `GET /api/v1/workspaces/:workspaceId/members` | None | Member IDs, login, names, and roles | Workspace member |
-| `GET /api/v1/workspaces/:workspaceId/tasks` | Optional `cursor` | `{ items, nextCursor }`, at most 20 items | Workspace member |
-| `POST /api/v1/workspaces/:workspaceId/tasks` | `title`, optional `description`, `status`, `priority`, `dueDate` (`YYYY-MM-DD`), `assigneeId` | Task, HTTP 201 | Owner, admin, or member; same origin |
-| `PATCH /api/v1/workspaces/:workspaceId/tasks/:taskId` | At least one of `title`, `description`, `status`, `priority`, `dueDate`, `assigneeId`; the last two accept `null` to clear | Updated task | Owner, admin, or member; same origin and matching workspace |
+| `PATCH /api/v1/workspaces/:workspaceId/members/:userId` | `{ role }` | Updated role | Owner; admin only for MEMBER/VIEWER targets and roles; same origin |
+| `DELETE /api/v1/workspaces/:workspaceId/members/:userId` | None | `{ removed: true }` | Owner/admin according to role policy, or self-leave except viewer; same origin |
+| `GET /api/v1/workspaces/:workspaceId/invitations` | None | Up to 100 recent invitations, without tokens | Owner/admin |
+| `POST /api/v1/workspaces/:workspaceId/invitations` | GitHub `githubLogin`, `role` (ADMIN/MEMBER/VIEWER) | Invitation and one-time token, HTTP 201 | Owner/admin; admins cannot invite admins; same origin |
+| `POST /api/v1/workspaces/:workspaceId/invitations/:invitationId/revoke` | None | `{ revoked: true }` | Owner/admin, subject to role policy; same origin |
+| `GET /api/v1/invitations/:token` | Opaque invitation token | Invitation details and status | Signed-in intended GitHub account only |
+| `POST /api/v1/invitations/:token/accept` | None | Workspace ID and ACCEPTED status | Signed-in intended GitHub account; same origin |
+| `POST /api/v1/invitations/:token/reject` | None | Workspace ID and REJECTED status | Signed-in intended GitHub account; same origin |
+| `GET /api/v1/workspaces/:workspaceId/tasks` | Optional `cursor` | `{ items, nextCursor }`, at most 20 items; each task has a `revision` | Workspace member |
+| `POST /api/v1/workspaces/:workspaceId/tasks` | `title`, optional `description`, `status`, `priority`, `dueDate` (`YYYY-MM-DD`), `assigneeId` | Task with `revision`, HTTP 201 | Owner, admin, or member; same origin |
+| `PATCH /api/v1/workspaces/:workspaceId/tasks/:taskId` | Required `expectedRevision` from the loaded task and at least one of `title`, `description`, `status`, `priority`, `dueDate`, `assigneeId`; the last two accept `null` to clear | Updated task with new `revision`; stale revision returns `TASK_CHANGED` (409) | Owner, admin, or member; same origin and matching workspace |
+| `GET /api/v1/workspaces/:workspaceId/activity` | Optional opaque `cursor` | `{ items, nextCursor, github }`: up to 20 task and saved GitHub events with snapshot availability | Workspace member, including viewer |
 | `GET /api/v1/workspaces/:workspaceId/github-links` | None | Verified active task links and safe GitHub item metadata | Workspace member |
 | `POST /api/v1/workspaces/:workspaceId/tasks/:taskId/github-links` | `itemId` from the connected repository snapshot | Link, HTTP 201 | Owner, admin, or member; same origin; task and item must match workspace |
 | `POST /api/v1/workspaces/:workspaceId/tasks/:taskId/github-links/:linkId/unlink` | None | `{ unlinked: true }`; the link is retained as history | Owner, admin, or member; same origin |
 
-Task statuses: `TODO`, `IN_PROGRESS`, `IN_REVIEW`, `DONE`. Priorities: `LOW`, `MEDIUM`, `HIGH`, `URGENT`. Task due dates are stored as PostgreSQL `DATE` and returned as `YYYY-MM-DD`.
+Task statuses: `TODO`, `IN_PROGRESS`, `IN_REVIEW`, `DONE`. Priorities: `LOW`, `MEDIUM`, `HIGH`, `URGENT`. Task due dates are stored as PostgreSQL `DATE` and returned as `YYYY-MM-DD`. Task revisions represent the current persisted field values and prevent a stale browser form or board move from silently replacing another member's changes. After `TASK_CHANGED`, reload tasks before saving again.
+
+Task creation, meaningful edits, and GitHub item link/unlink transitions append actor-attributed task events in the same transaction as the change. A no-op PATCH or repeated active link creates no event. Historical event details are server-created snapshots and do not change when a repository reconnects; existing tasks are not backfilled with invented activity. The combined timeline shows task events even when GitHub is unavailable. Each item has `id`, `source` (`TASK` or `GITHUB`), `occurredAt`, and `actorLogin`; task items also have `kind`, `actorId`, `taskId`, `taskTitle`, and `details`, while GitHub items have `event`, `itemNumber`, `itemTitle`, and `itemUrl`. The `github` field has `snapshotStatus` (`fresh`, `stale`, or `unavailable`), `lastSyncedAt`, `refreshAvailable`, and `reason`. A saved snapshot is stale after 24 hours. GitHub entries come only from the current saved connection generation. Opaque cursors are signed with a server-only secret; pagination keeps its first-page time bound while snapshot freshness uses the current response time. After authorization, an invalid or another-workspace cursor returns `INVALID_CURSOR` (400); after a repository refresh or reconnect it returns `ACTIVITY_CHANGED` (409), so the client should reload from the first page. The repository-only activity endpoint remains available.
 
 An absent, invalid, expired, or revoked session gets HTTP 401. A viewer write gets 403. Nonmembership gets 404, including when a caller guesses a workspace ID. Invalid request bodies get 400. A duplicate workspace slug gets 409. An assignee outside the workspace gets 400. Secrets and internal error details are never returned to the browser.
+
+An invitation targets the immutable GitHub account ID resolved from the entered username, not the mutable username itself. The recipient must authenticate with that account; a different signed-in user receives 404. Accepted, rejected, or revoked invitations cannot be used again (409); expired invitations return 410 on acceptance. Invitations expire seven days after creation, and only the hash of their random token is stored. Acceptance, role changes, and removal serialize on the workspace row. Pending invitations are revoked when their inviter leaves or loses permission to grant the invited role. The final owner cannot be demoted or removed (409). Removing a member with assigned tasks is blocked until reassignment (409), so task assignments never point to former members. The workspace owner's reference is transferred when necessary.
 
 ## GitHub repository integration
 

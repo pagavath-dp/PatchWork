@@ -157,22 +157,23 @@ describe("Milestone 1 API", () => {
     expect(created.status).toBe(201);
     expect(created.body.data).toMatchObject({ title: "Prepare demo", description: "First draft", status: "TODO", priority: "HIGH" });
     const taskId = created.body.data.id as string;
+    const expectedRevision = created.body.data.revision as string;
     const item = `${collection}/${taskId}`;
     const listed = await request(app).get(collection).set("Cookie", owner.cookie);
     expect(listed.status).toBe(200);
     expect(listed.body.data.items).toContainEqual(expect.objectContaining({ id: taskId, title: "Prepare demo" }));
     expect((await request(app).get(collection).set("Cookie", outsider.cookie)).status).toBe(404);
     expect((await request(app).patch(item).set("Origin", origin).send({ status: "DONE" })).status).toBe(401);
-    expect((await request(app).patch(item).set("Origin", origin).set("Cookie", outsider.cookie).send({ status: "DONE" })).status).toBe(404);
-    expect((await request(app).patch(item).set("Origin", origin).set("Cookie", viewer.cookie).send({ status: "DONE" })).status).toBe(403);
+    expect((await request(app).patch(item).set("Origin", origin).set("Cookie", outsider.cookie).send({ status: "DONE", expectedRevision })).status).toBe(404);
+    expect((await request(app).patch(item).set("Origin", origin).set("Cookie", viewer.cookie).send({ status: "DONE", expectedRevision })).status).toBe(403);
     expect((await request(app).patch(item).set("Cookie", owner.cookie).send({ status: "DONE" })).status).toBe(403);
     expect((await request(app).patch(item).set("Origin", origin).set("Cookie", owner.cookie).send({})).status).toBe(400);
     expect((await request(app).patch(item).set("Origin", origin).set("Cookie", owner.cookie).send({ title: "  " })).status).toBe(400);
     expect((await request(app).patch(item).set("Origin", origin).set("Cookie", owner.cookie).send({ status: "INVALID" })).status).toBe(400);
     expect((await request(app).patch(item).set("Origin", origin).set("Cookie", owner.cookie).send({ ownerId: outsider.user.id })).status).toBe(400);
-    expect((await request(app).patch(`/api/v1/workspaces/${otherWorkspaceId}/tasks/${taskId}`).set("Origin", origin).set("Cookie", owner.cookie).send({ status: "DONE" })).status).toBe(404);
+    expect((await request(app).patch(`/api/v1/workspaces/${otherWorkspaceId}/tasks/${taskId}`).set("Origin", origin).set("Cookie", owner.cookie).send({ status: "DONE", expectedRevision })).status).toBe(404);
     const updated = await request(app).patch(item).set("Origin", origin).set("Cookie", owner.cookie)
-      .send({ title: "Demo ready", description: "", status: "IN_REVIEW", priority: "URGENT" });
+      .send({ title: "Demo ready", description: "", status: "IN_REVIEW", priority: "URGENT", expectedRevision });
     expect(updated.status).toBe(200);
     expect(updated.body.data).toMatchObject({ id: taskId, title: "Demo ready", description: null, status: "IN_REVIEW", priority: "URGENT" });
     const stored = await db.task.findUniqueOrThrow({ where: { id: taskId } });
@@ -198,15 +199,17 @@ describe("Milestone 1 API", () => {
       .send({ title: "Move on board", priority: "HIGH" });
     expect(createdTask.status).toBe(201);
     const taskId = createdTask.body.data.id as string;
+    let expectedRevision = createdTask.body.data.revision as string;
     const taskUrl = `/api/v1/workspaces/${workspaceId}/tasks/${taskId}`;
     expect((await request(app).patch(taskUrl).set("Origin", origin).send({ status: "IN_PROGRESS" })).status).toBe(401);
-    expect((await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", outsider.cookie).send({ status: "IN_PROGRESS" })).status).toBe(404);
-    expect((await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", viewer.cookie).send({ status: "IN_PROGRESS" })).status).toBe(403);
+    expect((await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", outsider.cookie).send({ status: "IN_PROGRESS", expectedRevision })).status).toBe(404);
+    expect((await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", viewer.cookie).send({ status: "IN_PROGRESS", expectedRevision })).status).toBe(403);
     expect((await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", member.cookie).send({ status: "INVALID" })).status).toBe(400);
     expect((await db.task.findUniqueOrThrow({ where: { id: taskId } })).status).toBe("TODO");
     for (const status of ["IN_PROGRESS", "IN_REVIEW", "DONE", "TODO"] as const) {
-      const moved = await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", member.cookie).send({ status });
+      const moved = await request(app).patch(taskUrl).set("Origin", origin).set("Cookie", member.cookie).send({ status, expectedRevision });
       expect(moved.status).toBe(200);
+      expectedRevision = moved.body.data.revision as string;
       expect(moved.body.data).toMatchObject({ id: taskId, status });
       const listed = await request(app).get(`/api/v1/workspaces/${workspaceId}/tasks`).set("Cookie", viewer.cookie);
       expect(listed.status).toBe(200);
@@ -230,17 +233,17 @@ describe("Milestone 1 API", () => {
     expect(created.status).toBe(201);
     const path = `/api/v1/workspaces/${workspace.id}/tasks/${created.body.data.id}`;
     expect((await request(app).patch(path).set("Origin", origin).set("Cookie", owner.cookie)
-      .send({ assigneeId: outsider.user.id })).status).toBe(400);
+      .send({ assigneeId: outsider.user.id, expectedRevision: created.body.data.revision })).status).toBe(400);
     expect((await request(app).patch(path).set("Origin", origin).set("Cookie", owner.cookie)
-      .send({ dueDate: "2026-02-30" })).status).toBe(400);
+      .send({ dueDate: "2026-02-30", expectedRevision: created.body.data.revision })).status).toBe(400);
     const updated = await request(app).patch(path).set("Origin", origin).set("Cookie", owner.cookie)
-      .send({ dueDate: "2026-11-20", assigneeId: member.user.id });
+      .send({ dueDate: "2026-11-20", assigneeId: member.user.id, expectedRevision: created.body.data.revision });
     expect(updated.status).toBe(200);
     expect(updated.body.data).toMatchObject({ dueDate: "2026-11-20", assigneeId: member.user.id });
     const listed = await request(app).get(`/api/v1/workspaces/${workspace.id}/tasks`).set("Cookie", member.cookie);
     expect(listed.body.data.items).toContainEqual(expect.objectContaining({ id: created.body.data.id, dueDate: "2026-11-20", assigneeId: member.user.id }));
     const cleared = await request(app).patch(path).set("Origin", origin).set("Cookie", member.cookie)
-      .send({ dueDate: null, assigneeId: null });
+      .send({ dueDate: null, assigneeId: null, expectedRevision: updated.body.data.revision });
     expect(cleared.body.data).toMatchObject({ dueDate: null, assigneeId: null });
     expect((await request(app).get(`/api/v1/workspaces/${workspace.id}/members`).set("Cookie", outsider.cookie)).status).toBe(404);
   });
@@ -500,5 +503,123 @@ describe("GitHub repository integration", () => {
     expect(activity.body.data.items).toHaveLength(2);
     expect((await request(app).get(`${base}/items?kind=ISSUE`).set("Cookie", outsider.cookie)).status).toBe(404);
     expect((await request(app).get(`${base}/activity`).set("Cookie", outsider.cookie)).status).toBe(404);
+  });
+});
+
+describe("workspace invitations and membership", () => {
+  async function fixture() {
+    const owner = await createUserSession("invite-owner");
+    const recipient = await createUserSession("invite-recipient");
+    const outsider = await createUserSession("invite-outsider");
+    const workspace = await db.workspace.create({ data: { name: "Invited Team", slug: uniqueSlug("invited"), ownerId: owner.user.id } });
+    await db.workspaceMember.create({ data: { workspaceId: workspace.id, userId: owner.user.id, role: "OWNER" } });
+    const app = createApp(db, oauth, config, undefined, async (login) => ({ githubId: recipient.user.githubId, login }));
+    const base = `/api/v1/workspaces/${workspace.id}`;
+    const create = (role = "MEMBER") => request(app).post(`${base}/invitations`).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ githubLogin: recipient.user.githubLogin, role });
+    return { owner, recipient, outsider, workspace, app, base, create };
+  }
+
+  it("validates the recipient and grants only the authenticated intended account", async () => {
+    const { owner, recipient, outsider, workspace, app, base, create } = await fixture();
+    expect((await request(app).post(`${base}/invitations`).set("Origin", origin)
+      .send({ githubLogin: recipient.user.githubLogin, role: "MEMBER" })).status).toBe(401);
+    expect((await request(app).post(`${base}/invitations`).set("Origin", origin).set("Cookie", outsider.cookie)
+      .send({ githubLogin: recipient.user.githubLogin, role: "MEMBER" })).status).toBe(404);
+    expect((await request(app).post(`${base}/invitations`).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ githubLogin: "invalid login", role: "MEMBER" })).status).toBe(400);
+    const created = await create();
+    expect(created.status).toBe(201);
+    const token = created.body.data.token as string;
+    const saved = await db.workspaceInvitation.findUniqueOrThrow({ where: { id: created.body.data.id as string } });
+    expect(saved.tokenHash).toBe(sha256(token));
+    expect(saved.tokenHash).not.toBe(token);
+    expect(saved.recipientGithubId).toBe(recipient.user.githubId);
+    expect((await create()).status).toBe(409);
+    expect((await request(app).get(`${base}/invitations`).set("Cookie", outsider.cookie)).status).toBe(404);
+    expect((await request(app).get(`${base}/invitations`).set("Cookie", owner.cookie)).body.data[0].token).toBeUndefined();
+    const invitePath = `/api/v1/invitations/${token}`;
+    expect((await request(app).get(invitePath).set("Cookie", outsider.cookie)).status).toBe(404);
+    expect((await request(app).post(`${invitePath}/accept`).set("Origin", origin).set("Cookie", outsider.cookie)).status).toBe(404);
+    expect((await request(app).get(invitePath).set("Cookie", recipient.cookie)).status).toBe(200);
+    expect((await request(app).post(`${invitePath}/accept`).set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(200);
+    expect((await request(app).post(`${invitePath}/accept`).set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(409);
+    expect(await db.workspaceMember.count({ where: { workspaceId: workspace.id, userId: recipient.user.id } })).toBe(1);
+    expect((await request(app).get("/api/v1/workspaces").set("Cookie", recipient.cookie)).body.data)
+      .toContainEqual(expect.objectContaining({ id: workspace.id, role: "MEMBER" }));
+    expect((await request(app).get(`${base}/tasks`).set("Cookie", recipient.cookie)).status).toBe(200);
+    expect((await request(app).get(`${base}/repository`).set("Cookie", recipient.cookie)).status).toBe(200);
+  });
+
+  it("rejects expired and revoked invitations and makes rejection final", async () => {
+    const { owner, recipient, app, base, create } = await fixture();
+    const expired = await create();
+    await db.workspaceInvitation.update({ where: { id: expired.body.data.id as string }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    expect((await request(app).post(`/api/v1/invitations/${expired.body.data.token}/accept`)
+      .set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(410);
+    const revoked = await create();
+    expect((await request(app).post(`${base}/invitations/${revoked.body.data.id}/revoke`)
+      .set("Origin", origin).set("Cookie", owner.cookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/invitations/${revoked.body.data.token}/accept`)
+      .set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(409);
+    const rejected = await create();
+    expect((await request(app).post(`/api/v1/invitations/${rejected.body.data.token}/reject`)
+      .set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/invitations/${rejected.body.data.token}/accept`)
+      .set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(409);
+  });
+
+  it("accepts at most once under competing requests", async () => {
+    const { recipient, workspace, app, create } = await fixture();
+    const created = await create();
+    const path = `/api/v1/invitations/${created.body.data.token}/accept`;
+    const results = await Promise.all([1, 2].map(() => request(app).post(path).set("Origin", origin).set("Cookie", recipient.cookie)));
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect(await db.workspaceMember.count({ where: { workspaceId: workspace.id, userId: recipient.user.id } })).toBe(1);
+  });
+
+  it("enforces role management and retains at least one owner", async () => {
+    const { owner, recipient, outsider, workspace, app, base, create } = await fixture();
+    const outsiderApp = createApp(db, oauth, config, undefined, async (login) => ({ githubId: outsider.user.githubId, login }));
+    const pendingAdmin = await request(outsiderApp).post(`${base}/invitations`).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ githubLogin: outsider.user.githubLogin, role: "ADMIN" });
+    expect(pendingAdmin.status).toBe(201);
+    const invited = await create("ADMIN");
+    expect((await request(app).post(`/api/v1/invitations/${invited.body.data.token}/accept`)
+      .set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(200);
+    const rolePath = `${base}/members/${owner.user.id}`;
+    expect((await request(app).patch(rolePath).set("Origin", origin).set("Cookie", recipient.cookie)
+      .send({ role: "VIEWER" })).status).toBe(403);
+    expect((await request(app).patch(rolePath).set("Origin", origin).set("Cookie", outsider.cookie)
+      .send({ role: "VIEWER" })).status).toBe(404);
+    expect((await request(app).patch(rolePath).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ role: "MEMBER" })).status).toBe(409);
+    expect((await request(app).delete(rolePath).set("Origin", origin).set("Cookie", owner.cookie)).status).toBe(409);
+    expect((await request(app).patch(`${base}/members/${recipient.user.id}`).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ role: "OWNER" })).status).toBe(200);
+    expect((await request(app).patch(rolePath).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ role: "MEMBER" })).status).toBe(200);
+    expect((await db.workspaceInvitation.findUniqueOrThrow({ where: { id: pendingAdmin.body.data.id as string } })).status).toBe("REVOKED");
+    expect((await request(outsiderApp).post(`/api/v1/invitations/${pendingAdmin.body.data.token}/accept`)
+      .set("Origin", origin).set("Cookie", outsider.cookie)).status).toBe(409);
+    expect((await db.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).ownerId).toBe(recipient.user.id);
+    expect((await request(app).patch(`${base}/members/${recipient.user.id}`).set("Origin", origin).set("Cookie", owner.cookie)
+      .send({ role: "VIEWER" })).status).toBe(403);
+    expect((await request(app).delete(`${base}/members/${owner.user.id}`).set("Origin", origin).set("Cookie", owner.cookie)).status).toBe(200);
+  });
+
+  it("blocks removal of an assigned member and viewer writes", async () => {
+    const { owner, recipient, workspace, app, base, create } = await fixture();
+    const invited = await create("VIEWER");
+    expect((await request(app).post(`/api/v1/invitations/${invited.body.data.token}/accept`)
+      .set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(200);
+    expect((await request(app).post(`${base}/invitations`).set("Origin", origin).set("Cookie", recipient.cookie)
+      .send({ githubLogin: "someone", role: "MEMBER" })).status).toBe(403);
+    expect((await request(app).patch(`${base}/members/${recipient.user.id}`).set("Origin", origin).set("Cookie", recipient.cookie)
+      .send({ role: "OWNER" })).status).toBe(403);
+    expect((await request(app).delete(`${base}/members/${recipient.user.id}`).set("Origin", origin).set("Cookie", recipient.cookie)).status).toBe(403);
+    await db.task.create({ data: { workspaceId: workspace.id, title: "Assigned", createdById: owner.user.id, assigneeId: recipient.user.id } });
+    expect((await request(app).delete(`${base}/members/${recipient.user.id}`).set("Origin", origin).set("Cookie", owner.cookie)).status).toBe(409);
+    expect(await db.workspaceMember.count({ where: { workspaceId: workspace.id, userId: recipient.user.id } })).toBe(1);
   });
 });

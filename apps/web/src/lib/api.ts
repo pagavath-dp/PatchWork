@@ -8,6 +8,7 @@ export type Workspace = {
 
 export type Task = {
   id: string;
+  revision: string;
   title: string;
   description: string | null;
   status: "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "DONE";

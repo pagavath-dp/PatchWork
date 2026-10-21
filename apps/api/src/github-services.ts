@@ -1,7 +1,8 @@
 import type { PrismaClient } from "@patchwork/db";
 import type { GitHubGateway, RepositorySnapshot } from "./github.js";
 import { HttpError } from "./http.js";
-import { requireWorkspaceMember } from "./services.js";
+import { lockWorkspace, requireWorkspaceMember } from "./services.js";
+import { writeTaskActivity } from "./activity-services.js";
 
 export async function requireManager(db: Pick<PrismaClient, "workspaceMember">, workspaceId: string, userId: string) {
   const role = await requireWorkspaceMember(db, workspaceId, userId);
@@ -193,31 +194,56 @@ export async function listTaskGitHubLinks(db: PrismaClient, workspaceId: string,
   }, { isolationLevel: "RepeatableRead" });
 }
 
+async function lockGitHubConnection(tx: Pick<PrismaClient, "$queryRaw">, workspaceId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "GitHubConnection" WHERE "workspaceId" = ${workspaceId}::uuid FOR SHARE`;
+}
+
 export async function linkTaskGitHubItem(db: PrismaClient, workspaceId: string, taskId: string, itemId: string, userId: string) {
   return db.$transaction(async (tx) => {
+    await lockWorkspace(tx, workspaceId);
     const role = await requireWorkspaceMember(tx, workspaceId, userId);
     if (role === "VIEWER") throw new HttpError(403, "FORBIDDEN", "Viewer cannot link tasks");
-    const task = await tx.task.findFirst({ where: { id: taskId, workspaceId }, select: { id: true } });
+    const task = await tx.task.findFirst({ where: { id: taskId, workspaceId }, select: { id: true, title: true } });
     if (!task) throw new HttpError(404, "NOT_FOUND", "Task not found");
+    await lockGitHubConnection(tx, workspaceId);
     const connection = await tx.gitHubConnection.findUnique({ where: { workspaceId } });
     if (!connection || connection.disconnectedAt) throw new HttpError(409, "REPOSITORY_NOT_CONNECTED", "Connect a repository before linking tasks");
     const item = await tx.gitHubItem.findFirst({ where: { id: itemId, connectionId: connection.id,
       syncGeneration: connection.syncGeneration } });
     if (!item) throw new HttpError(400, "INVALID_GITHUB_ITEM", "Choose an issue or pull request from the connected repository");
-    return tx.taskGitHubLink.upsert({ where: { taskId_itemId: { taskId, itemId } },
+    const existing = await tx.taskGitHubLink.findUnique({ where: { taskId_itemId: { taskId, itemId } } });
+    if (existing && !existing.unlinkedAt) return existing;
+    const link = await tx.taskGitHubLink.upsert({ where: { taskId_itemId: { taskId, itemId } },
       create: { workspaceId, taskId, itemId, linkedById: userId },
       update: { unlinkedAt: null, linkedById: userId, linkedAt: new Date() },
     });
+    await writeTaskActivity(tx, { workspaceId, taskId, actorId: userId, taskTitle: task.title,
+      kind: "GITHUB_ITEM_LINKED", details: { item: { kind: item.kind, number: item.number,
+        title: item.title, url: item.htmlUrl, repository: connection.fullName } } });
+    return link;
   });
 }
 
 export async function unlinkTaskGitHubItem(db: PrismaClient, workspaceId: string, taskId: string, linkId: string, userId: string) {
   return db.$transaction(async (tx) => {
+    await lockWorkspace(tx, workspaceId);
     const role = await requireWorkspaceMember(tx, workspaceId, userId);
     if (role === "VIEWER") throw new HttpError(403, "FORBIDDEN", "Viewer cannot unlink tasks");
+    await lockGitHubConnection(tx, workspaceId);
+    const connection = await tx.gitHubConnection.findUnique({ where: { workspaceId } });
+    if (!connection || connection.disconnectedAt) throw new HttpError(404, "NOT_FOUND", "Active link not found");
+    const link = await tx.taskGitHubLink.findFirst({
+      where: { id: linkId, taskId, workspaceId, unlinkedAt: null,
+        item: { connectionId: connection.id, syncGeneration: connection.syncGeneration } },
+      include: { task: { select: { title: true } }, item: true },
+    });
+    if (!link) throw new HttpError(404, "NOT_FOUND", "Active link not found");
     const changed = await tx.taskGitHubLink.updateMany({ where: { id: linkId, taskId, workspaceId, unlinkedAt: null },
       data: { unlinkedAt: new Date() } });
     if (changed.count !== 1) throw new HttpError(404, "NOT_FOUND", "Link not found");
+    await writeTaskActivity(tx, { workspaceId, taskId, actorId: userId, taskTitle: link.task.title,
+      kind: "GITHUB_ITEM_UNLINKED", details: { item: { kind: link.item.kind, number: link.item.number,
+        title: link.item.title, url: link.item.htmlUrl, repository: connection.fullName } } });
     return { unlinked: true };
   });
 }
